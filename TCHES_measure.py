@@ -6,6 +6,8 @@ import adafruit_sht31d
 import minimalmodbus
 from datetime import datetime, timedelta
 import serial
+import websocket
+import json
 
 filename = input("Podaj nazwę pliku do zapisu danych (np. 'dane'): ")
 current_time = datetime.now()
@@ -21,6 +23,18 @@ i2c = busio.I2C(board.SCL, board.SDA)
 sensors = [None, None, None, None]  # Lista do przechowywania czujników SHT85
 # Inicjalizacja multipleksera Gravity (TCA9548A)
 tca = TCA9548A(i2c)
+
+# A dictionary of Pico IPs to poll
+PICO_NAMES = {
+    "10.99.200.50": "Sternik"
+}
+data_payload = {}  # Shared data structure to hold latest values from picos
+
+# Track last pico tstamp and last reception time separately
+last_pico_timestamps = {}      # pico_ip: last tstamp received from pico
+last_pico_reception = {}       # pico_ip: parent time.time() when last new data received
+
+STALE_TIMEOUT = 60  # seconds
 
 # Inicjalizacja 4 czujników SHT85 na kanałach 0, 1, 2, 3
 try:
@@ -87,6 +101,55 @@ def read_keller_pressure():
             pressures.append(None)
     return pressures
 
+def poll_picos():  
+    now = time.time()
+    pico_data = None
+    for ip in PICO_NAMES:
+        try:
+            uri = f"ws://{ip}:5000/ws"
+            ws = websocket.create_connection(uri)
+            pico_data_raw = json.loads(ws.recv())
+            pico_data = {"T": pico_data_raw["T0"], "RH": pico_data_raw["RH0"]}
+            print(pico_data)
+            return pico_data
+                    
+            # for msg in ws:
+            #     pico_data = json.loads(msg)
+            #     pico_ts = pico_data.get("tstamp")
+            #     if pico_ts is not None:
+            #         # Only update if pico's tstamp is new
+            #         if last_pico_timestamps.get(ip) != pico_ts:
+            #             last_pico_timestamps[ip] = pico_ts
+            #             last_pico_reception[ip] = now  # Mark when RP received new data
+            #             expected_keys = ["Temperature", "RH"]
+            #             if all(key in pico_data for key in expected_keys):
+            #                 data_payload["T_stamp"] = pico_ts
+            #                 for key in pico_data:
+            #                     data_payload[key] = {pico_data[key]}
+
+            #                 # data_payload[expected_keys] = pico_data[expected_keys]
+            #                 # data_payload[f"T_stamp_{PICO_NAMES[ip]}"] = pico_ts
+            #                 # print(f"Updated {expected_keys}: {pico_data[expected_keys]} (pico ts={pico_ts})")
+            #             else:
+            #                 print(f"Expected keys {expected_keys} not in pico data: {pico_data}")
+            #         else:
+            #             print(f"No new data from {ip} (pico timestamp unchanged)")
+            #     else:
+            #         print(f"No timestamp in data from {ip}")
+        except Exception as e:
+            print(f"Error polling {ip}: {e}")
+    # Mark data as stale if RP hasn't received new data in STALE_TIMEOUT seconds
+    for ip in PICO_NAMES:
+        last_recv = last_pico_reception.get(ip)
+        if last_recv is not None and (now - last_recv) > STALE_TIMEOUT:
+            print(f"Data from {ip} is stale (last new data received {now - last_recv:.1f} seconds ago)")
+            pico_data = None
+            # for key in pico_data:
+            #     data_payload[key] = None
+    return pico_data
+
+
+
 if __name__ == "__main__":
     # Nagłówek pliku
     with open(filename, "w") as f:
@@ -105,7 +168,7 @@ if __name__ == "__main__":
                 timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
                 sht_data = read_sensors()
                 keller_data = read_keller_pressure()
-                print()
+                pico_data = poll_picos()
                 try:
                     with open(filename, "a") as f:
                         line = f"{timestamp}"
@@ -116,7 +179,10 @@ if __name__ == "__main__":
                                 line += f";{value:.4f}"
                             else:
                                 line += ";N/A"
+                        for value in pico_data:
+                            if value is not None:
+                                line += f";{value:.2f}"
                         f.write(line + "\n")
                 except Exception as e:
                     print(f"Błąd zapisu do pliku: {e}")
-            
+        

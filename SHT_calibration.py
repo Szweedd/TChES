@@ -3,9 +3,7 @@ import board
 import busio
 from adafruit_tca9548a import TCA9548A
 import adafruit_sht31d
-import minimalmodbus
 from datetime import datetime, timedelta
-import serial
 
 # filename = input("Podaj nazwę pliku do zapisu danych (np. 'dane'):")
 filename = "test_rozne_SHT_to_samo_RH_5C_NaCl_"
