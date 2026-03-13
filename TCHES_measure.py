@@ -29,7 +29,7 @@ except:
     print("Błąd inicjalizacji czujnika SHT85 na kanale 0")
     sensors[0] = None
 try:
-    sensors[1] = adafruit_sht31d.SHT31D(tca[1]) #Sterujacy na potrzeby testow, zwykle Zimny
+    sensors[1] = adafruit_sht31d.SHT31D(tca[1]) #Zimny
 except:
     print("Błąd inicjalizacji czujnika SHT85 na kanale 1")
     sensors[1] = None
@@ -50,20 +50,21 @@ keller_addresses = [1, 2]
 PRESSURE_REGISTER = 2  # rejestr z ciśnieniem (sprawdź dokumentację Keller)
 INSTRUMENT_PORT = '/dev/ttyUSB0'
 
-# calibration_offsets = [[1.0, 0.0], [1.8485373400241858, -57.11269923046575], [1.6923853514484328, -42.28769239617964], [1.4856200785013094, -42.771567110695834]] # Offsety kalibracyjne a, b dla każdego czujnika SHT85, gdzie y = a*x + b
-calibration_offsets = [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0]] # Offsety kalibracyjne a, b dla każdego czujnika SHT85, gdzie y = a*x + b
-SHT_dict = {0: "Otoczenie", 1: "Sterujacy", 2: "Zimny", 3: "Wylata"}
+calibration_offsets = [[1.0, 0.0],[2.0, +100.0],[-10.0, -1000.0],[50.0, -55.0]]
+# calibration_offsets = [[1.0, 0.0], [1.3735487923071448, -26.372142926536362], [1.5677919149868214, -49.98906059130657], [1.1692621358991013, -14.223351567758813]] # Offsety kalibracyjne a, b dla każdego czujnika SHT85, gdzie y = a*x + b
+SHT_dict = {0: "Otoczenie", 1: "Zimny", 2: "Wlata", 3: "Wylata"}
 def read_sensors():
     results = []
     for i in range(len(sensors)):
         try:
             temp = sensors[i].temperature
-            hum = sensors[i].relative_humidity*calibration_offsets[i][0] + calibration_offsets[i][1]
-            print(f"{SHT_dict.get(i)}: Temperatura: {temp:.2f} °C, Wilgotność: {hum:.2f} %")
-            results.extend([temp, hum])
+            hum_raw = sensors[i].relative_humidity
+            hum = hum_raw*calibration_offsets[i][0] + calibration_offsets[i][1]
+            print(f"{SHT_dict.get(i)}: Temperatura: {temp:.2f} °C, Wilgotność: {hum_raw:.2f} %, Wilgotność_skalibrowana: {hum:.2f} %")
+            results.extend([temp, hum_raw, hum])
         except Exception as e:
-            print(f"Błąd odczytu z czujnika {sensors[i]}: {e}")
-            results.extend([None, None])
+            print(f"Błąd odczytu z czujnika {SHT_dict.get(i)}: {e}")
+            results.extend([None, None, None])
     return results
 
 def read_keller_pressure():
@@ -79,18 +80,18 @@ def read_keller_pressure():
             # Odczyt 2 rejestrów jako float (32-bit, big-endian)
         
             pressure = instrument.read_float(2, functioncode=3, number_of_registers=2, byteorder=minimalmodbus.BYTEORDER_BIG)
-            print(f"Keller {addr}: Ciśnienie: {pressure:.3f} bar")
+            print(f"Keller {addr}: Ciśnienie: {pressure:.4f} bar")
             pressures.append(pressure)
         except Exception as e:
+            print(f"Błąd odczytu z Keller {addr}: {e}")
             pressures.append(None)
     return pressures
 
 if __name__ == "__main__":
     # Nagłówek pliku
     with open(filename, "w") as f:
-        f.write("timestamp;SHT85_1_temp;SHT85_1_hum;SHT85_2_temp;SHT85_2_hum;SHT85_3_temp;SHT85_3_hum;Keller_1;Keller_2\n")
-       
-       
+        f.write("timestamp;SHT85_1_temp;SHT85_1_hum_raw;SHT85_1_hum;SHT85_2_temp;SHT85_2_hum_raw;SHT85_2_hum;SHT85_3_temp;SHT85_3_hum_raw;SHT85_3_hum;SHT85_4_temp;SHT85_4_hum_raw;SHT85_4_hum;Keller_1;Keller_2\n")
+              
         n = 0
         poczatek_pomiaru = datetime.now()
          
@@ -112,7 +113,7 @@ if __name__ == "__main__":
                             line += f";{value:.2f}"
                         for value in keller_data:
                             if value is not None:
-                                line += f";{value:.2f}"
+                                line += f";{value:.4f}"
                             else:
                                 line += ";N/A"
                         f.write(line + "\n")
