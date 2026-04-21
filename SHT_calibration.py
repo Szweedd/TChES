@@ -6,7 +6,7 @@ import adafruit_sht31d
 from datetime import datetime, timedelta
 
 # filename = input("Podaj nazwę pliku do zapisu danych (np. 'dane'):")
-filename = "test_rozne_SHT_to_samo_RH_5C_NaCl_"
+filename = "test_przedpomiarowy_"
 current_time = datetime.now()
 filename += current_time.strftime("%Y-%m-%d_%H_%M_%S")
 filename += ".csv"
@@ -17,7 +17,7 @@ czas_pomiaru = timedelta(seconds = 0)
 
 # Inicjalizacja magistrali I2C
 i2c = busio.I2C(board.SCL, board.SDA)
-sensors = [None, None, None, None, None, None]  # Lista do przechowywania czujników SHT85
+sensors = [None, None, None, None, None]  # Lista do przechowywania czujników SHT85
 # Inicjalizacja multipleksera Gravity (TCA9548A)
 tca = TCA9548A(i2c)
 
@@ -48,11 +48,11 @@ except:
     print("Błąd inicjalizacji czujnika SHT85 na kanale 4")
     sensors[4] = None
     
-try:
-    sensors[5] = adafruit_sht31d.SHT31D(tca[5]) #Testowy
-except:
-    print("Błąd inicjalizacji czujnika SHT85 na kanale 5")
-    sensors[5] = None
+# try:
+#     sensors[5] = adafruit_sht31d.SHT31D(tca[5]) #Testowy
+# except:
+#     print("Błąd inicjalizacji czujnika SHT85 na kanale 5")
+#     sensors[5] = None
     
 
 calibration_offsets = [[1.0, 0.0],[1.0, 0.0],[1.0, 0.0],[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]

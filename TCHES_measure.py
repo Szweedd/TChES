@@ -26,8 +26,10 @@ tca = TCA9548A(i2c)
 
 # A dictionary of Pico IPs to poll
 PICO_NAMES = {
-    "10.99.200.50": "Sternik"
+    # "10.99.200.50": "Sternik",
+    "192.168.255.182": "Ster"
 }
+pico_connections = {}  # Persistent WebSocket connections, keyed by IP
 data_payload = {}  # Shared data structure to hold latest values from picos
 
 # Track last pico tstamp and last reception time separately
@@ -101,51 +103,53 @@ def read_keller_pressure():
             pressures.append(None)
     return pressures
 
+def connect_pico(ip):
+    """Open (or reopen) a persistent WebSocket connection to a Pico."""
+    uri = f"ws://{ip}:5000/ws"
+    try:
+        ws = websocket.create_connection(uri, timeout=5)
+        ws.settimeout(1)  # Short timeout so recv() returns when buffer is empty
+        pico_connections[ip] = ws
+        print(f"Connected to Pico at {ip} ({PICO_NAMES[ip]})")
+    except Exception as e:
+        pico_connections[ip] = None
+        print(f"Could not connect to Pico at {ip}: {e}")
+
 def poll_picos():  
     now = time.time()
     pico_data = None
     for ip in PICO_NAMES:
+        ws = pico_connections.get(ip)
+        if ws is None:
+            connect_pico(ip)
+            ws = pico_connections.get(ip)
+        if ws is None:
+            continue
         try:
-            uri = f"ws://{ip}:5000/ws"
-            ws = websocket.create_connection(uri)
-            pico_data_raw = json.loads(ws.recv())
-            pico_data = {"T": pico_data_raw["T0"], "RH": pico_data_raw["RH0"]}
-            print(pico_data)
-            return pico_data
-                    
-            # for msg in ws:
-            #     pico_data = json.loads(msg)
-            #     pico_ts = pico_data.get("tstamp")
-            #     if pico_ts is not None:
-            #         # Only update if pico's tstamp is new
-            #         if last_pico_timestamps.get(ip) != pico_ts:
-            #             last_pico_timestamps[ip] = pico_ts
-            #             last_pico_reception[ip] = now  # Mark when RP received new data
-            #             expected_keys = ["Temperature", "RH"]
-            #             if all(key in pico_data for key in expected_keys):
-            #                 data_payload["T_stamp"] = pico_ts
-            #                 for key in pico_data:
-            #                     data_payload[key] = {pico_data[key]}
-
-            #                 # data_payload[expected_keys] = pico_data[expected_keys]
-            #                 # data_payload[f"T_stamp_{PICO_NAMES[ip]}"] = pico_ts
-            #                 # print(f"Updated {expected_keys}: {pico_data[expected_keys]} (pico ts={pico_ts})")
-            #             else:
-            #                 print(f"Expected keys {expected_keys} not in pico data: {pico_data}")
-            #         else:
-            #             print(f"No new data from {ip} (pico timestamp unchanged)")
-            #     else:
-            #         print(f"No timestamp in data from {ip}")
+            # Drain all buffered messages; keep only the latest one
+            latest_raw = None
+            while True:
+                try:
+                    latest_raw = json.loads(ws.recv())
+                except websocket.WebSocketTimeoutException:
+                    break  # Buffer is empty, exit drain loop
+            if latest_raw is not None:
+                pico_data = {"T": latest_raw["T0"], "RH": latest_raw["RH0"]}
+                last_pico_reception[ip] = now
         except Exception as e:
-            print(f"Error polling {ip}: {e}")
-    # Mark data as stale if RP hasn't received new data in STALE_TIMEOUT seconds
+            print(f"Error receiving from {ip}, reconnecting: {e}")
+            try:
+                ws.close()
+            except Exception:
+                pass
+            pico_connections[ip] = None
+
+    # Mark data as stale if no new data received within STALE_TIMEOUT
     for ip in PICO_NAMES:
         last_recv = last_pico_reception.get(ip)
         if last_recv is not None and (now - last_recv) > STALE_TIMEOUT:
             print(f"Data from {ip} is stale (last new data received {now - last_recv:.1f} seconds ago)")
             pico_data = None
-            # for key in pico_data:
-            #     data_payload[key] = None
     return pico_data
 
 
@@ -153,36 +157,42 @@ def poll_picos():
 if __name__ == "__main__":
     # Nagłówek pliku
     with open(filename, "w") as f:
-        f.write("timestamp;SHT85_1_temp;SHT85_1_hum_raw;SHT85_1_hum;SHT85_2_temp;SHT85_2_hum_raw;SHT85_2_hum;SHT85_3_temp;SHT85_3_hum_raw;SHT85_3_hum;SHT85_4_temp;SHT85_4_hum_raw;SHT85_4_hum;Keller_1;Keller_2\n")
-              
-        n = 0
-        poczatek_pomiaru = datetime.now()
-         
-        while True:
-            
-            current_time = datetime.now() 
-            czas_pomiaru = current_time - poczatek_pomiaru
-            
-            if czas_pomiaru >= krok_probkowania * n:
-                n+= 1
-                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                sht_data = read_sensors()
-                keller_data = read_keller_pressure()
-                pico_data = poll_picos()
-                try:
-                    with open(filename, "a") as f:
-                        line = f"{timestamp}"
-                        for value in sht_data:
-                            line += f";{value:.2f}"
-                        for value in keller_data:
-                            if value is not None:
-                                line += f";{value:.4f}"
-                            else:
-                                line += ";N/A"
-                        for value in pico_data:
-                            if value is not None:
-                                line += f";{value:.2f}"
-                        f.write(line + "\n")
-                except Exception as e:
-                    print(f"Błąd zapisu do pliku: {e}")
+        f.write("timestamp;SHT85_1_temp;SHT85_1_hum_raw;SHT85_1_hum;SHT85_2_temp;SHT85_2_hum_raw;SHT85_2_hum;SHT85_3_temp;SHT85_3_hum_raw;SHT85_3_hum;SHT85_4_temp;SHT85_4_hum_raw;SHT85_4_hum;Keller_1;Keller_2;SHT85_pico_temp;SHT85_pico_hum_raw\n")
+    
+    # Pre-connect to all Picos before entering the measurement loop
+    for ip in PICO_NAMES:
+        connect_pico(ip)
+    
+    n = 0
+    poczatek_pomiaru = datetime.now()
+     
+    while True:
         
+        current_time = datetime.now() 
+        czas_pomiaru = current_time - poczatek_pomiaru
+        
+        if czas_pomiaru >= krok_probkowania * n:
+            n+= 1
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            sht_data = read_sensors()
+            keller_data = read_keller_pressure()
+            pico_data = poll_picos()
+            print(pico_data)
+            try:
+                with open(filename, "a") as f:
+                    line = f"{timestamp}"
+                    for value in sht_data:
+                        line += f";{value:.2f}"
+                    for value in keller_data:
+                        if value is not None:
+                            line += f";{value:.4f}"
+                        else:
+                            line += ";N/A"
+                    for value in pico_data.values():
+                        if value is not None:
+                            line += f";{value:.2f}"
+                        else:
+                            line += ";N/A"
+                    f.write(line + "\n")
+            except Exception as e:
+                print(f"Błąd zapisu do pliku: {e}")
