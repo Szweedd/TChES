@@ -66,7 +66,7 @@ keller_addresses = [1, 2]
 PRESSURE_REGISTER = 2  # rejestr z ciśnieniem (sprawdź dokumentację Keller)
 INSTRUMENT_PORT = '/dev/ttyUSB0'
 
-calibration_offsets = [[1.0, 0.0],[2.0, +100.0],[-10.0, -1000.0],[50.0, -55.0]]
+calibration_offsets = [[1.0, 0.0],[1.0, 0.0],[1.0, 0.0],[1.0, 0.0]]
 # calibration_offsets = [[1.0, 0.0], [1.3735487923071448, -26.372142926536362], [1.5677919149868214, -49.98906059130657], [1.1692621358991013, -14.223351567758813]] # Offsety kalibracyjne a, b dla każdego czujnika SHT85, gdzie y = a*x + b
 SHT_dict = {0: "Otoczenie", 1: "Zimny", 2: "Wlata", 3: "Wylata"}
 def read_sensors():
@@ -117,7 +117,7 @@ def connect_pico(ip):
 
 def poll_picos():  
     now = time.time()
-    pico_data = None
+    pico_data = [None, None]
     for ip in PICO_NAMES:
         ws = pico_connections.get(ip)
         if ws is None:
@@ -134,7 +134,7 @@ def poll_picos():
                 except websocket.WebSocketTimeoutException:
                     break  # Buffer is empty, exit drain loop
             if latest_raw is not None:
-                pico_data = {"T": latest_raw["T0"], "RH": latest_raw["RH0"]}
+                pico_data = [latest_raw["T0"], latest_raw["RH0"]]
                 last_pico_reception[ip] = now
         except Exception as e:
             print(f"Error receiving from {ip}, reconnecting: {e}")
@@ -149,7 +149,7 @@ def poll_picos():
         last_recv = last_pico_reception.get(ip)
         if last_recv is not None and (now - last_recv) > STALE_TIMEOUT:
             print(f"Data from {ip} is stale (last new data received {now - last_recv:.1f} seconds ago)")
-            pico_data = None
+            pico_data = [None, None]
     return pico_data
 
 
@@ -177,22 +177,25 @@ if __name__ == "__main__":
             sht_data = read_sensors()
             keller_data = read_keller_pressure()
             pico_data = poll_picos()
-            print(pico_data)
             try:
                 with open(filename, "a") as f:
                     line = f"{timestamp}"
                     for value in sht_data:
-                        line += f";{value:.2f}"
+                        if value is not None:
+                            line += f";{value:.2f}"
+                        else:
+                            line += ";N/A"
                     for value in keller_data:
                         if value is not None:
                             line += f";{value:.4f}"
                         else:
                             line += ";N/A"
-                    for value in pico_data.values():
+                    for value in pico_data:
                         if value is not None:
                             line += f";{value:.2f}"
                         else:
-                            line += ";N/A"
+                            line += ";N/A;N/A"
+                            break
                     f.write(line + "\n")
             except Exception as e:
                 print(f"Błąd zapisu do pliku: {e}")
