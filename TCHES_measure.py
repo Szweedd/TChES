@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import serial
 import websocket
 import json
+import urllib.request
 
 filename = input("Podaj nazwę pliku do zapisu danych (np. 'dane'): ")
 current_time = datetime.now()
@@ -15,6 +16,18 @@ filename += current_time.strftime("%Y-%m-%d_%H_%M_%S")
 filename += ".csv"
 
 krok_probkowania = timedelta(seconds = int(input("Podaj krok próbkowania w sekundach (np. 60): ")))
+
+# Automatyczne zakończenie pomiaru, gdy |T_wylot - T_wlot| < DT_PROG.
+# Warunek jest "uzbrajany" dopiero, gdy |dT| raz przekroczy próg (na starcie dT ~ 0),
+# a pomiar kończy się po DT_LICZBA_ODCZYTOW kolejnych odczytach poniżej progu (odporność na szum).
+DT_PROG = 1.5  # °C
+DT_LICZBA_ODCZYTOW = 2
+DT_UZBROJENIE = 3.0             # °C - |dT| musi raz osiągnąć tę wartość (lub DT_PROG + 1, jeśli wyższe), zanim zadziałają ostrzeżenie i koniec pomiaru
+DT_MARGINES_OSTRZEZENIA = 0.5   # °C - ostrzeżenie, gdy |dT| < DT_PROG + margines
+koniec_bliski = False  # Flaga, czy wysłano już powiadomienie o zbliżającym się końcu pomiaru
+prog_input = input(f"Podaj próg |dT| zakończenia pomiaru w °C (Enter = {DT_PROG}): ").strip()
+if prog_input:
+    DT_PROG = float(prog_input.replace(",", "."))
 
 czas_pomiaru = timedelta(seconds = 0)
 
@@ -152,20 +165,43 @@ def poll_picos():
             pico_data = [None, None]
     return pico_data
 
+# Powiadomienia przez ntfy.sh - subskrybuj ten temat na https://ntfy.sh/<NTFY_TOPIC>
+# Temat jest publiczny, więc jego nazwa działa jak hasło - nie udostępniaj jej.
+NTFY_URL = "https://ntfy.sh/"
+NTFY_TOPIC = "tches_pomiar_7486d42493cd"
+
+def send_notification(title, message, priority=3, tags=None):
+    """Wysyła powiadomienie ntfy; błąd sieci nie przerywa pomiaru."""
+    payload = {"topic": NTFY_TOPIC, "title": title, "message": message, "priority": priority}
+    if tags:
+        payload["tags"] = tags
+    try:
+        req = urllib.request.Request(NTFY_URL, data=json.dumps(payload).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10).close()
+        print(f"Wysłano powiadomienie: {title}")
+    except Exception as e:
+        print(f"UWAGA: nie udało się wysłać powiadomienia ntfy: {e}")
 
 
 if __name__ == "__main__":
     # Nagłówek pliku
     with open(filename, "w") as f:
-        f.write("timestamp;SHT85_1_temp;SHT85_1_hum_raw;SHT85_1_hum;SHT85_2_temp;SHT85_2_hum_raw;SHT85_2_hum;SHT85_3_temp;SHT85_3_hum_raw;SHT85_3_hum;SHT85_4_temp;SHT85_4_hum_raw;SHT85_4_hum;Keller_1;Keller_2;SHT85_pico_temp;SHT85_pico_hum_raw\n")
+        f.write("timestamp;SHT85_1_temp;SHT85_1_hum_raw;SHT85_1_hum;SHT85_2_temp;SHT85_2_hum_raw;SHT85_2_hum;SHT85_3_temp;SHT85_3_hum_raw;SHT85_3_hum;SHT85_4_temp;SHT85_4_hum_raw;SHT85_4_hum;Keller_1;Keller_2;SHT85_pico_temp;SHT85_pico_hum_raw;dT_wylot_wlot\n")
     
     # Pre-connect to all Picos before entering the measurement loop
     for ip in PICO_NAMES:
         connect_pico(ip)
-    
+
+    # Powiadomienie startowe - potwierdza, że kanał działa, zanim pomiar potrwa godzinami
+    send_notification("Pomiar TChES rozpoczęty",
+                      f"Plik: {filename}\nKoniec, gdy |dT| < {DT_PROG} °C", priority=2, tags=["thermometer"])
+
     n = 0
     poczatek_pomiaru = datetime.now()
-     
+    dt_uzbrojony = False
+    dt_licznik = 0
+
     while True:
         
         current_time = datetime.now() 
@@ -177,6 +213,10 @@ if __name__ == "__main__":
             sht_data = read_sensors()
             keller_data = read_keller_pressure()
             pico_data = poll_picos()
+            # sht_data: [temp, hum_raw, hum] dla każdego czujnika; kanał 2 = Wlata, kanał 3 = Wylata
+            t_wlot = sht_data[2*3]
+            t_wylot = sht_data[3*3]
+            dT = t_wylot - t_wlot if t_wlot is not None and t_wylot is not None else None
             try:
                 with open(filename, "a") as f:
                     line = f"{timestamp}"
@@ -196,6 +236,50 @@ if __name__ == "__main__":
                         else:
                             line += ";N/A;N/A"
                             break
+                    line += f";{dT:.2f}" if dT is not None else ";N/A"
                     f.write(line + "\n")
             except Exception as e:
                 print(f"Błąd zapisu do pliku: {e}")
+
+            # Brak odczytu któregoś z czujników - nie zmieniamy stanu warunku
+            if dT is not None:
+                if not dt_uzbrojony:
+                    if abs(dT) >= max(DT_UZBROJENIE, DT_PROG + 1):
+                        dt_uzbrojony = True
+                        print(f"dT = {dT:.2f} °C - warunek zakończenia uzbrojony (próg {DT_PROG} °C)")
+                    else:
+                        print(f"dT = {dT:.2f} °C (oczekiwanie na |dT| >= {max(DT_UZBROJENIE, DT_PROG + 1)} °C)")
+                else:
+                    # Tylko po uzbrojeniu: jednorazowe ostrzeżenie o zbliżającym się końcu
+                    if not koniec_bliski and abs(dT) < DT_PROG + DT_MARGINES_OSTRZEZENIA:
+                        koniec_bliski = True
+                        print(f"dT = {dT:.2f} °C - pomiar niedługo się skończy, wysyłam ostrzeżenie")
+                        send_notification("Pomiar niedługo się skończy",
+                                          f"|dT| wynosi: {dT:.2f} °C przy progu: {DT_PROG} °C. Kieruj się do labu.",
+                                          priority = 4, tags=["thermometer", "warning"])
+
+                    # Licznik końca - działa na każdym odczycie po uzbrojeniu, także tym z ostrzeżeniem
+                    if abs(dT) < DT_PROG:
+                        dt_licznik += 1
+                        print(f"dT = {dT:.2f} °C < {DT_PROG} °C ({dt_licznik}/{DT_LICZBA_ODCZYTOW})")
+                    else:
+                        dt_licznik = 0
+                        print(f"dT = {dT:.2f} °C")
+
+                if dt_licznik >= DT_LICZBA_ODCZYTOW:
+                    print("=" * 60)
+                    print(f"KONIEC POMIARU {timestamp}: |dT| < {DT_PROG} °C przez {DT_LICZBA_ODCZYTOW} kolejnych odczytów.")
+                    print(f"Wyłącz pomiar i zważ materiał. Dane zapisano w pliku: {filename}")
+                    print("=" * 60)
+                    send_notification("Koniec pomiaru TChES - zważ materiał",
+                                      f"{timestamp}: |dT| < {DT_PROG} °C (ostatnio dT = {dT:.2f} °C).\n"
+                                      f"Zapis zakończony, zważ materiał.\nPlik: {filename}",
+                                      priority=5, tags=["scales", "warning"])
+                    break
+
+    for ws in pico_connections.values():
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
